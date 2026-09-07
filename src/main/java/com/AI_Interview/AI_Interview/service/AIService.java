@@ -303,43 +303,71 @@ public class AIService {
     // 4. GENERATE FINAL INTERVIEW REPORT
     // =========================================================
 
-    public String generateFinalReport(
+    public JsonNode generateFinalReport(
             String role,
             String interviewData) {
 
         String instructions = """
-                You are an expert technical interviewer.
+            You are an expert technical interviewer.
 
-                Generate a final interview performance report.
+            Analyze the complete interview performance.
 
-                Role:
-                %s
+            Interview Role:
+            %s
 
-                Interview data:
-                %s
+            Interview Data:
+            %s
 
-                Include:
+            Calculate:
 
-                - Overall performance
-                - Technical performance
-                - Communication
-                - Strong topics
-                - Weak topics
-                - Strongest answer
-                - Weakest answer
-                - Specific improvement recommendations
-                - Final assessment
+            1. Overall score from 0 to 100
+            2. Technical score from 0 to 100
+            3. Communication score from 0 to 100
+            4. Strengths
+            5. Weaknesses
+            6. Specific recommendations
 
-                Make the report professional,
-                specific and useful for the candidate.
+            Also consider:
+            - Technical correctness
+            - Completeness
+            - Clarity
+            - Candidate's understanding
+            - Consistency across answers
+            - Ability to handle follow-up questions
+            - Ability to solve scenario-based questions
 
-                Do not return markdown if structured output is requested.
-                """.formatted(role, interviewData);
+            Return ONLY valid JSON:
 
-        return callAI(
+            {
+              "overallScore": 0.0,
+              "technicalScore": 0.0,
+              "communicationScore": 0.0,
+              "strengths": "string",
+              "weaknesses": "string",
+              "recommendations": "string"
+            }
+
+            Scores must be between 0 and 100.
+
+            Do not return markdown.
+            Do not return anything outside JSON.
+            """.formatted(role, interviewData);
+
+        String json = callAI(
                 instructions,
-                "Generate the final interview report."
+                "Generate the final interview performance report."
         );
+
+        try {
+            return objectMapper.readTree(json);
+
+        } catch (Exception e) {
+
+            throw new RuntimeException(
+                    "Failed to parse AI final report",
+                    e
+            );
+        }
     }
 
     // =========================================================
@@ -405,4 +433,6 @@ public class AIService {
                 "No text output received from OpenAI"
         );
     }
+
+
 }

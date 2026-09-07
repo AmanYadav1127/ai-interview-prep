@@ -1,7 +1,6 @@
 package com.AI_Interview.AI_Interview.service;
 
 import com.AI_Interview.AI_Interview.dto.CreateInterviewRequest;
-import com.AI_Interview.AI_Interview.dto.InterviewResponse;
 import com.AI_Interview.AI_Interview.dto.NextQuestionResponse;
 import com.AI_Interview.AI_Interview.entity.Interview;
 import com.AI_Interview.AI_Interview.entity.Question;
@@ -25,13 +24,17 @@ public class InterviewService {
     private final QuestionRepository questionRepository;
     private final AIService aiService;
 
-    public InterviewResponse createInterview(
+    // =========================================================
+    // 1. CREATE INTERVIEW
+    // =========================================================
+
+    public Interview createInterview(
             CreateInterviewRequest request,
             String email) {
 
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() ->
-                        new RuntimeException("User not found"));
+                        new ResourceNotFoundException("User not found"));
 
         Interview interview = new Interview();
 
@@ -42,53 +45,65 @@ public class InterviewService {
         interview.setType(request.getType());
         interview.setDifficulty(request.getDifficulty());
         interview.setQuestionLimit(request.getQuestionLimit());
+
         interview.setStatus("NOT_STARTED");
         interview.setStartedAt(null);
+        interview.setCompletedAt(null);
 
-        Interview saved = interviewRepository.save(interview);
-
-        return new InterviewResponse(
-                saved.getId(),
-                saved.getTitle(),
-                saved.getRole(),
-                saved.getMode(),
-                saved.getType(),
-                saved.getDifficulty(),
-                saved.getQuestionLimit(),
-                saved.getStatus()
-        );
+        return interviewRepository.save(interview);
     }
+
+    // =========================================================
+    // 2. GET INTERVIEW BY ID
+    // =========================================================
+
+    public Interview getInterviewById(Long interviewId) {
+
+        return interviewRepository.findById(interviewId)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Interview not found"));
+    }
+
+    // =========================================================
+    // 3. GET USER'S INTERVIEWS
+    // =========================================================
 
     public List<Interview> getUserInterviews(String email) {
 
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() ->
-                        new RuntimeException("User not found"));
+                        new ResourceNotFoundException("User not found"));
 
         return interviewRepository.findByUser(user);
     }
 
-    public Interview getInterviewById(Long id) {
-
-        return interviewRepository.findById(id)
-                .orElseThrow(() ->
-                        new RuntimeException("Interview not found"));
-    }
+    // =========================================================
+    // 4. START INTERVIEW
+    // =========================================================
 
     public Question startInterview(Long interviewId) {
 
         Interview interview = interviewRepository.findById(interviewId)
-                .orElseThrow(() -> new ResourceNotFoundException("Interview not found"));
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Interview not found"));
 
+        // Start interview
         if (interview.getStartedAt() == null) {
+
             interview.setStartedAt(LocalDateTime.now());
+            interview.setStatus("IN_PROGRESS");
+
+            interviewRepository.save(interview);
         }
 
-        NextQuestionResponse response = aiService.generateInitialQuestion(
-                interview.getRole(),
-                interview.getDifficulty()
-        );
+        // Generate initial AI question
+        NextQuestionResponse response =
+                aiService.generateInitialQuestion(
+                        interview.getRole(),
+                        interview.getDifficulty()
+                );
 
+        // Create question
         Question question = new Question();
 
         question.setInterview(interview);
@@ -97,18 +112,24 @@ public class InterviewService {
         question.setDifficulty(response.getDifficulty());
         question.setQuestionType(response.getQuestionType());
 
-        interviewRepository.save(interview);
+        question.setQuestionOrder(0);
 
         return questionRepository.save(question);
     }
 
-    public void completeInterview(Long id) {
+    // =========================================================
+    // 5. COMPLETE INTERVIEW
+    // =========================================================
 
-        Interview interview = getInterviewById(id);
+    public Interview completeInterview(Long interviewId) {
+
+        Interview interview = interviewRepository.findById(interviewId)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Interview not found"));
 
         interview.setStatus("COMPLETED");
         interview.setCompletedAt(LocalDateTime.now());
 
-        interviewRepository.save(interview);
+        return interviewRepository.save(interview);
     }
 }

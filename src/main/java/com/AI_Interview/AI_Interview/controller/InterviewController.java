@@ -1,16 +1,16 @@
 package com.AI_Interview.AI_Interview.controller;
 
 import com.AI_Interview.AI_Interview.dto.CreateInterviewRequest;
-import com.AI_Interview.AI_Interview.dto.InterviewResponse;
 import com.AI_Interview.AI_Interview.entity.Interview;
+import com.AI_Interview.AI_Interview.entity.InterviewResult;
 import com.AI_Interview.AI_Interview.entity.Question;
+import com.AI_Interview.AI_Interview.exception.ResourceNotFoundException;
+import com.AI_Interview.AI_Interview.repository.InterviewResultRepository;
 import com.AI_Interview.AI_Interview.service.InterviewService;
-import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
-
 
 import java.util.List;
 
@@ -20,10 +20,11 @@ import java.util.List;
 public class InterviewController {
 
     private final InterviewService interviewService;
+    private final InterviewResultRepository interviewResultRepository;
 
     @PostMapping
-    public ResponseEntity<InterviewResponse> createInterview(
-            @Valid @RequestBody CreateInterviewRequest request,
+    public ResponseEntity<Interview> createInterview(
+            @RequestBody CreateInterviewRequest request,
             Authentication authentication) {
 
         String email = authentication.getName();
@@ -54,7 +55,9 @@ public class InterviewController {
     }
 
     @PostMapping("/{interviewId}/start")
-    public ResponseEntity<Question> startInterview(@PathVariable Long interviewId) {
+    public ResponseEntity<Question> startInterview(
+            @PathVariable Long interviewId) {
+
         return ResponseEntity.ok(
                 interviewService.startInterview(interviewId)
         );
@@ -67,5 +70,23 @@ public class InterviewController {
         interviewService.completeInterview(id);
 
         return ResponseEntity.ok("Interview completed");
+    }
+
+    // Get final AI interview report
+    @GetMapping("/{interviewId}/result")
+    public ResponseEntity<InterviewResult> getInterviewResult(
+            @PathVariable Long interviewId) {
+
+        Interview interview =
+                interviewService.getInterviewById(interviewId);
+
+        InterviewResult result =
+                interviewResultRepository.findByInterview(interview)
+                        .orElseThrow(() ->
+                                new ResourceNotFoundException(
+                                        "Interview result not found"
+                                ));
+
+        return ResponseEntity.ok(result);
     }
 }
