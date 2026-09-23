@@ -6,6 +6,7 @@ import com.AI_Interview.AI_Interview.entity.InterviewResult;
 import com.AI_Interview.AI_Interview.entity.Question;
 import com.AI_Interview.AI_Interview.exception.ResourceNotFoundException;
 import com.AI_Interview.AI_Interview.repository.InterviewResultRepository;
+import com.AI_Interview.AI_Interview.service.AnswerService;
 import com.AI_Interview.AI_Interview.service.InterviewService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -13,6 +14,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/interviews")
@@ -21,6 +23,7 @@ public class InterviewController {
 
     private final InterviewService interviewService;
     private final InterviewResultRepository interviewResultRepository;
+    private final AnswerService answerService;
 
     @PostMapping
     public ResponseEntity<Interview> createInterview(
@@ -73,6 +76,10 @@ public class InterviewController {
     }
 
     // Get final AI interview report
+    //
+    // If the report is missing but the interview is completed (e.g. the AI
+    // call failed when the last answer was submitted), it is regenerated
+    // here — so the frontend's "Retry" button actually works.
     @GetMapping("/{interviewId}/result")
     public ResponseEntity<InterviewResult> getInterviewResult(
             @PathVariable Long interviewId) {
@@ -80,13 +87,21 @@ public class InterviewController {
         Interview interview =
                 interviewService.getInterviewById(interviewId);
 
-        InterviewResult result =
-                interviewResultRepository.findByInterview(interview)
-                        .orElseThrow(() ->
-                                new ResourceNotFoundException(
-                                        "Interview result not found"
-                                ));
+        Optional<InterviewResult> existing =
+                interviewResultRepository.findByInterview(interview);
 
-        return ResponseEntity.ok(result);
+        if (existing.isPresent()) {
+            return ResponseEntity.ok(existing.get());
+        }
+
+        if (!"COMPLETED".equals(interview.getStatus())) {
+            throw new ResourceNotFoundException(
+                    "Interview result is not available yet"
+            );
+        }
+
+        return ResponseEntity.ok(
+                answerService.generateAndSaveFinalReport(interview)
+        );
     }
 }

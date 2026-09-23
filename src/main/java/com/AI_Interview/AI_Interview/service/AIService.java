@@ -12,23 +12,30 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
+import lombok.extern.slf4j.Slf4j;
+
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
+@Slf4j
 @Service
 public class AIService {
 
     private final RestClient restClient;
     private final JsonMapper objectMapper;
+    private final OfflineFallbackEngine offlineFallbackEngine;
 
     @Value("${openai.model}")
     private String model;
 
     public AIService(
             @Value("${openai.api-key}") String apiKey,
-            JsonMapper objectMapper) {
+            JsonMapper objectMapper,
+            OfflineFallbackEngine offlineFallbackEngine) {
 
         this.objectMapper = objectMapper;
+        this.offlineFallbackEngine = offlineFallbackEngine;
 
         this.restClient = RestClient.builder()
                 .baseUrl("https://api.openai.com/v1")
@@ -72,12 +79,11 @@ public class AIService {
                 Do not return anything outside JSON.
                 """.formatted(role, difficulty);
 
-        String json = callAI(
-                instructions,
-                "Generate the first interview question."
-        );
-
         try {
+            String json = callAI(
+                    instructions,
+                    "Generate the first interview question."
+            );
 
             JsonNode node = objectMapper.readTree(json);
 
@@ -90,10 +96,14 @@ public class AIService {
 
         } catch (Exception e) {
 
-            throw new RuntimeException(
-                    "Failed to parse AI question response",
-                    e
+            // AI unavailable (quota, network, bad key...) — fall back
+            // to the offline question bank so the interview can proceed
+            log.warn(
+                    "AI initial question failed, using offline fallback: {}",
+                    e.getMessage()
             );
+
+            return offlineFallbackEngine.initialQuestion(role, difficulty);
         }
     }
 
@@ -144,12 +154,11 @@ public class AIService {
                 Do not return anything outside JSON.
                 """.formatted(question, answer);
 
-        String json = callAI(
-                instructions,
-                "Evaluate the candidate answer."
-        );
-
         try {
+            String json = callAI(
+                    instructions,
+                    "Evaluate the candidate answer."
+            );
 
             JsonNode node = objectMapper.readTree(json);
 
@@ -165,10 +174,13 @@ public class AIService {
 
         } catch (Exception e) {
 
-            throw new RuntimeException(
-                    "Failed to parse AI evaluation response",
-                    e
+            // AI unavailable — score the answer with the offline heuristic
+            log.warn(
+                    "AI evaluation failed, using offline evaluation: {}",
+                    e.getMessage()
             );
+
+            return offlineFallbackEngine.evaluate(question, answer);
         }
     }
 
@@ -180,7 +192,9 @@ public class AIService {
             String role,
             String previousQuestion,
             String answer,
-            AnswerEvaluationResponse evaluation) {
+            AnswerEvaluationResponse evaluation,
+            List<String> askedQuestions,
+            Difficulty baseDifficulty) {
 
         String instructions = """
                 You are conducting a LIVE ADAPTIVE technical interview.
@@ -262,12 +276,11 @@ public class AIService {
                 evaluation.getFeedback()
         );
 
-        String json = callAI(
-                instructions,
-                "Generate the next adaptive interview question."
-        );
-
         try {
+            String json = callAI(
+                    instructions,
+                    "Generate the next adaptive interview question."
+            );
 
             JsonNode node = objectMapper.readTree(json);
 
@@ -292,9 +305,18 @@ public class AIService {
 
         } catch (Exception e) {
 
-            throw new RuntimeException(
-                    "Failed to parse AI next-question response",
-                    e
+            // AI unavailable — pick the next question from the offline
+            // bank, adapting difficulty from the previous answer's score
+            log.warn(
+                    "AI next-question failed, using offline fallback: {}",
+                    e.getMessage()
+            );
+
+            return offlineFallbackEngine.nextQuestion(
+                    role,
+                    askedQuestions,
+                    baseDifficulty,
+                    evaluation.getScore()
             );
         }
     }

@@ -13,4 +13,8 @@ public interface AnswerRepository extends JpaRepository<Answer, Long> {
     Optional<Answer> findByQuestion(Question question);
 
     List<Answer> findByQuestion_Interview(Interview interview);
+
+    // Answers in the order their questions were asked
+    List<Answer> findByQuestion_InterviewOrderByQuestion_IdAsc(
+            Interview interview);
 }

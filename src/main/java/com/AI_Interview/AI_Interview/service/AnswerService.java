@@ -11,14 +11,20 @@ import com.AI_Interview.AI_Interview.entity.Question;
 import com.AI_Interview.AI_Interview.exception.ResourceNotFoundException;
 import com.AI_Interview.AI_Interview.repository.AnswerRepository;
 import com.AI_Interview.AI_Interview.repository.EvaluationRepository;
+import com.AI_Interview.AI_Interview.repository.InterviewRepository;
 import com.AI_Interview.AI_Interview.repository.InterviewResultRepository;
 import com.AI_Interview.AI_Interview.repository.QuestionRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.JsonNode;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AnswerService {
@@ -27,6 +33,7 @@ public class AnswerService {
     private final QuestionRepository questionRepository;
     private final EvaluationRepository evaluationRepository;
     private final InterviewResultRepository interviewResultRepository;
+    private final InterviewRepository interviewRepository;
     private final AIService aiService;
 
     public Question submitAnswer(
@@ -90,110 +97,212 @@ public class AnswerService {
 
             interview.setStatus("COMPLETED");
             interview.setCompletedAt(LocalDateTime.now());
+            interviewRepository.save(interview);
 
-            // 6. Get all answers of this interview
-            List<Answer> answers =
-                    answerRepository.findByQuestion_Interview(interview);
-
-            // 7. Get all evaluations
-            List<Evaluation> evaluations =
-                    evaluationRepository
-                            .findByAnswer_Question_Interview(interview);
-
-            // 8. Build interview data for AI
-            StringBuilder interviewData = new StringBuilder();
-
-            for (int i = 0; i < answers.size(); i++) {
-
-                Answer currentAnswer = answers.get(i);
-
-                interviewData
-                        .append("Question: ")
-                        .append(
-                                currentAnswer
-                                        .getQuestion()
-                                        .getQuestionText()
-                        )
-                        .append("\n");
-
-                interviewData
-                        .append("Answer: ")
-                        .append(currentAnswer.getAnswerText())
-                        .append("\n");
-
-                if (i < evaluations.size()) {
-
-                    Evaluation currentEvaluation =
-                            evaluations.get(i);
-
-                    interviewData
-                            .append("Score: ")
-                            .append(currentEvaluation.getScore())
-                            .append("\n");
-
-                    interviewData
-                            .append("Technical Accuracy: ")
-                            .append(
-                                    currentEvaluation
-                                            .getTechnicalAccuracy()
-                            )
-                            .append("\n");
-
-                    interviewData
-                            .append("Completeness: ")
-                            .append(
-                                    currentEvaluation
-                                            .getCompleteness()
-                            )
-                            .append("\n");
-
-                    interviewData
-                            .append("Clarity: ")
-                            .append(
-                                    currentEvaluation
-                                            .getClarity()
-                            )
-                            .append("\n");
-
-                    interviewData
-                            .append("Correct Points: ")
-                            .append(
-                                    currentEvaluation
-                                            .getCorrectPoints()
-                            )
-                            .append("\n");
-
-                    interviewData
-                            .append("Missing Points: ")
-                            .append(
-                                    currentEvaluation
-                                            .getMissingPoints()
-                            )
-                            .append("\n");
-
-                    interviewData
-                            .append("Feedback: ")
-                            .append(
-                                    currentEvaluation
-                                            .getFeedback()
-                            )
-                            .append("\n");
-                }
-
-                interviewData.append("\n");
+            // 6. Generate the final AI report.
+            //
+            // If the AI call fails here (e.g. API quota exhausted), the
+            // interview is still complete — the answer and its evaluation
+            // are already stored. GET /api/interviews/{id}/result will
+            // retry the report generation on demand.
+            try {
+                generateAndSaveFinalReport(interview);
+            } catch (Exception e) {
+                log.warn(
+                        "Final report generation failed for interview {}: {}",
+                        interview.getId(),
+                        e.getMessage()
+                );
             }
 
-            // 9. Generate final AI report
-            var report =
-                    aiService.generateFinalReport(
-                            interview.getRole(),
-                            interviewData.toString()
-                    );
+            // 7. Return final question
+            return questionRepository.save(question);
+        }
 
-            // 10. Save InterviewResult
-            InterviewResult result = new InterviewResult();
+        // 8. Generate next adaptive question
+        //    (AI when available, offline bank otherwise)
+        List<String> askedQuestions = answerRepository
+                .findByQuestion_Interview(interview)
+                .stream()
+                .map(answerEntity ->
+                        answerEntity.getQuestion().getQuestionText())
+                .toList();
 
-            result.setInterview(interview);
+        NextQuestionResponse nextQuestionResponse =
+                aiService.generateNextQuestion(
+                        interview.getRole(),
+                        question.getQuestionText(),
+                        request.getAnswerText(),
+                        evaluationResponse,
+                        askedQuestions,
+                        question.getDifficulty()
+                );
+
+        // 9. Create next question
+        Question nextQuestion = new Question();
+
+        nextQuestion.setInterview(interview);
+
+        nextQuestion.setQuestionText(
+                nextQuestionResponse.getQuestion()
+        );
+
+        nextQuestion.setTopic(
+                nextQuestionResponse.getTopic()
+        );
+
+        nextQuestion.setDifficulty(
+                nextQuestionResponse.getDifficulty()
+        );
+
+        nextQuestion.setQuestionType(
+                nextQuestionResponse.getQuestionType()
+        );
+
+        nextQuestion.setQuestionOrder(
+                question.getQuestionOrder() + 1
+        );
+
+        // 10. Keep interview in progress
+        interview.setStatus("IN_PROGRESS");
+
+        // 11. Save next question
+        return questionRepository.save(nextQuestion);
+    }
+
+    // =========================================================
+    // FINAL REPORT GENERATION
+    // (called after the last answer, and retried on demand
+    //  by the result endpoint if it failed earlier)
+    // =========================================================
+
+    public InterviewResult generateAndSaveFinalReport(
+            Interview interview) {
+
+        // Idempotent — never create a duplicate report row
+        Optional<InterviewResult> existing =
+                interviewResultRepository.findByInterview(interview);
+
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+
+        // 1. Get all answers of this interview (in question order)
+        List<Answer> answers = answerRepository
+                .findByQuestion_InterviewOrderByQuestion_IdAsc(interview);
+
+        if (answers.isEmpty()) {
+            throw new ResourceNotFoundException(
+                    "No answers were recorded for this interview"
+            );
+        }
+
+        // 2. Build interview data for AI
+        StringBuilder interviewData = new StringBuilder();
+
+        for (Answer currentAnswer : answers) {
+
+            interviewData
+                    .append("Question: ")
+                    .append(
+                            currentAnswer
+                                    .getQuestion()
+                                    .getQuestionText()
+                    )
+                    .append("\n");
+
+            interviewData
+                    .append("Answer: ")
+                    .append(currentAnswer.getAnswerText())
+                    .append("\n");
+
+            // Each answer is paired with its own evaluation
+            evaluationRepository
+                    .findByAnswer(currentAnswer)
+                    .ifPresent(currentEvaluation -> {
+
+                        interviewData
+                                .append("Score: ")
+                                .append(currentEvaluation.getScore())
+                                .append("\n");
+
+                        interviewData
+                                .append("Technical Accuracy: ")
+                                .append(
+                                        currentEvaluation
+                                                .getTechnicalAccuracy()
+                                )
+                                .append("\n");
+
+                        interviewData
+                                .append("Completeness: ")
+                                .append(
+                                        currentEvaluation
+                                                .getCompleteness()
+                                )
+                                .append("\n");
+
+                        interviewData
+                                .append("Clarity: ")
+                                .append(
+                                        currentEvaluation
+                                                .getClarity()
+                                )
+                                .append("\n");
+
+                        interviewData
+                                .append("Correct Points: ")
+                                .append(
+                                        currentEvaluation
+                                                .getCorrectPoints()
+                                )
+                                .append("\n");
+
+                        interviewData
+                                .append("Missing Points: ")
+                                .append(
+                                        currentEvaluation
+                                                .getMissingPoints()
+                                )
+                                .append("\n");
+
+                        interviewData
+                                .append("Feedback: ")
+                                .append(
+                                        currentEvaluation
+                                                .getFeedback()
+                                )
+                                .append("\n");
+                    });
+
+            interviewData.append("\n");
+        }
+
+        // 3. Generate the final report.
+        //
+        // The AI path is preferred; if it is unavailable the report is
+        // computed offline from the stored per-answer evaluations.
+        JsonNode report = null;
+
+        try {
+            report = aiService.generateFinalReport(
+                    interview.getRole(),
+                    interviewData.toString()
+            );
+        } catch (Exception e) {
+            log.warn(
+                    "AI final report failed for interview {}: {}",
+                    interview.getId(),
+                    e.getMessage()
+            );
+        }
+
+        // 4. Save InterviewResult
+        InterviewResult result = new InterviewResult();
+
+        result.setInterview(interview);
+
+        if (report != null) {
 
             result.setOverallScore(
                     report.get("overallScore").asDouble()
@@ -219,50 +328,110 @@ public class AnswerService {
                     report.get("recommendations").asText()
             );
 
-            interviewResultRepository.save(result);
+        } else {
 
-            // 11. Return final question
-            return questionRepository.save(question);
+            List<Evaluation> evaluations = evaluationRepository
+                    .findByAnswer_Question_Interview(interview);
+
+            applyOfflineReport(result, answers, evaluations);
         }
 
-        // 12. Generate next adaptive question
-        NextQuestionResponse nextQuestionResponse =
-                aiService.generateNextQuestion(
-                        interview.getRole(),
-                        question.getQuestionText(),
-                        request.getAnswerText(),
-                        evaluationResponse
-                );
+        return interviewResultRepository.save(result);
+    }
 
-        // 13. Create next question
-        Question nextQuestion = new Question();
+    // =========================================================
+    // OFFLINE FINAL REPORT
+    // (used when the AI service is unavailable — the report is
+    //  computed from the stored per-answer evaluations)
+    // =========================================================
 
-        nextQuestion.setInterview(interview);
+    private void applyOfflineReport(
+            InterviewResult result,
+            List<Answer> answers,
+            List<Evaluation> evaluations) {
 
-        nextQuestion.setQuestionText(
-                nextQuestionResponse.getQuestion()
+        double overall = 0;
+        double technical = 0;
+        double communication = 0;
+
+        if (!evaluations.isEmpty()) {
+
+            for (Evaluation evaluation : evaluations) {
+                overall += evaluation.getScore();
+                technical += evaluation.getTechnicalAccuracy();
+                communication += evaluation.getClarity();
+            }
+
+            int count = evaluations.size();
+
+            overall /= count;
+            technical /= count;
+            communication /= count;
+        }
+
+        result.setOverallScore(overall);
+        result.setTechnicalScore(technical);
+        result.setCommunicationScore(communication);
+
+        List<String> strengths = new ArrayList<>();
+        List<String> weaknesses = new ArrayList<>();
+        List<String> recommendations = new ArrayList<>();
+
+        if (technical >= 70) {
+            strengths.add(
+                    "Solid technical coverage of the questions asked."
+            );
+        }
+
+        if (communication >= 70) {
+            strengths.add(
+                    "Answers were clear and well structured."
+            );
+        }
+
+        strengths.add(
+                "Completed the full interview session ("
+                        + answers.size() + " questions)."
         );
 
-        nextQuestion.setTopic(
-                nextQuestionResponse.getTopic()
+        if (technical < 70) {
+            weaknesses.add(
+                    "Some answers missed key technical points "
+                            + "mentioned in the questions."
+            );
+        }
+
+        if (communication < 70) {
+            weaknesses.add(
+                    "Answers could be more structured: open with the "
+                            + "core idea, add detail, then summarize."
+            );
+        }
+
+        if (weaknesses.isEmpty()) {
+            weaknesses.add(
+                    "No significant weaknesses detected in this session."
+            );
+        }
+
+        recommendations.add(
+                "Practice explaining core concepts out loud under "
+                        + "time pressure."
         );
 
-        nextQuestion.setDifficulty(
-                nextQuestionResponse.getDifficulty()
+        recommendations.add(
+                "Review the topics listed as missing in each "
+                        + "question's feedback."
         );
 
-        nextQuestion.setQuestionType(
-                nextQuestionResponse.getQuestionType()
+        recommendations.add(
+                "Note: the AI service was unavailable, so this report "
+                        + "was generated from offline rule-based "
+                        + "evaluation. Scores are indicative only."
         );
 
-        nextQuestion.setQuestionOrder(
-                question.getQuestionOrder() + 1
-        );
-
-        // 14. Keep interview in progress
-        interview.setStatus("IN_PROGRESS");
-
-        // 15. Save next question
-        return questionRepository.save(nextQuestion);
+        result.setStrengths(String.join("\n", strengths));
+        result.setWeaknesses(String.join("\n", weaknesses));
+        result.setRecommendations(String.join("\n", recommendations));
     }
 }
