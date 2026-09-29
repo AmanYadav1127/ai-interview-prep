@@ -22,7 +22,16 @@ public class SecurityConfig {
             throws Exception {
 
         http
+                .cors(org.springframework.security.config.Customizer.withDefaults())
                 .csrf(csrf -> csrf.disable())
+
+                .exceptionHandling(ex -> ex
+                        .authenticationEntryPoint((request, response, authException) -> {
+                            response.setContentType("application/json");
+                            response.setStatus(jakarta.servlet.http.HttpServletResponse.SC_UNAUTHORIZED);
+                            response.getWriter().write("{\"error\":\"Full authentication is required to access this resource\"}");
+                        })
+                )
 
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(

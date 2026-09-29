@@ -57,32 +57,55 @@ public class AIService {
     public NextQuestionResponse generateInitialQuestion(
             String role,
             Difficulty difficulty) {
+        return generateInitialQuestion(role, difficulty, com.AI_Interview.AI_Interview.enums.InterviewType.LIVE_ADAPTIVE);
+    }
 
-        String instructions = """
-                You are an expert technical interviewer.
+    public NextQuestionResponse generateInitialQuestion(
+            String role,
+            Difficulty difficulty,
+            com.AI_Interview.AI_Interview.enums.InterviewType type) {
 
-                Generate the first interview question for this role.
+        boolean isLive = type == com.AI_Interview.AI_Interview.enums.InterviewType.LIVE_ADAPTIVE;
 
-                Role: %s
-                Difficulty: %s
+        String instructions;
+        if (isLive) {
+            instructions = """
+                    You are conducting a realistic, conversational 1-on-1 LIVE technical interview as an expert hiring manager and senior engineer.
+                    Target Role: %s
+                    Difficulty Level: %s
 
-                The question must be relevant to the role and difficulty.
+                    Start the interview warmly, engagingly, and professionally, just like a real person-vs-person live interview.
+                    Introduce yourself briefly (e.g. "Hello! Welcome to your interview for the %s role. I'm Alex from the engineering team, and I'll be conducting our session today.") and ask an opening warm-up question inviting the candidate to introduce themselves, outline their core background, and mention the primary technologies or projects they've worked on recently.
 
-                Return ONLY valid JSON:
+                    Return ONLY valid JSON:
+                    {
+                      "question": "greeting and introductory question text",
+                      "topic": "Introduction & Background"
+                    }
+                    Do not return markdown. Do not return anything outside JSON.
+                    """.formatted(role, difficulty, role);
+        } else {
+            instructions = """
+                    You are an expert technical interviewer conducting a structured technical interview.
+                    Target Role: %s
+                    Difficulty Level: %s
 
-                {
-                  "question": "question text",
-                  "topic": "topic name"
-                }
+                    Generate the first direct technical question for this role testing core fundamentals at the specified difficulty.
+                    Do NOT add conversational greetings or small talk; state the question clearly and directly.
 
-                Do not return markdown.
-                Do not return anything outside JSON.
-                """.formatted(role, difficulty);
+                    Return ONLY valid JSON:
+                    {
+                      "question": "question text",
+                      "topic": "topic name"
+                    }
+                    Do not return markdown. Do not return anything outside JSON.
+                    """.formatted(role, difficulty);
+        }
 
         try {
             String json = callAI(
                     instructions,
-                    "Generate the first interview question."
+                    isLive ? "Start live 1-on-1 interview with warm intro." : "Generate first interview question."
             );
 
             JsonNode node = objectMapper.readTree(json);
@@ -95,15 +118,12 @@ public class AIService {
             );
 
         } catch (Exception e) {
-
-            // AI unavailable (quota, network, bad key...) — fall back
-            // to the offline question bank so the interview can proceed
             log.warn(
                     "AI initial question failed, using offline fallback: {}",
                     e.getMessage()
             );
 
-            return offlineFallbackEngine.initialQuestion(role, difficulty);
+            return offlineFallbackEngine.initialQuestion(role, difficulty, type);
         }
     }
 
@@ -118,7 +138,7 @@ public class AIService {
         String instructions = """
                 You are an expert technical interviewer.
 
-                Evaluate the candidate's answer.
+                Evaluate the candidate's answer against the question asked.
 
                 Question:
                 %s
@@ -127,17 +147,16 @@ public class AIService {
                 %s
 
                 Evaluate the answer on:
-
                 1. Overall score from 0 to 100
-                2. Technical accuracy from 0 to 100
+                2. Technical accuracy from 0 to 100 (percentage match representing how much percent the candidate's answer is correct compared to the ideal actual answer)
                 3. Completeness from 0 to 100
                 4. Clarity from 0 to 100
-                5. Correct points
-                6. Missing points
+                5. Correct points (bullet points of what candidate got right)
+                6. Missing points (bullet points of what key concepts were omitted)
                 7. Constructive feedback
+                8. Ideal / Correct Answer: Provide a comprehensive, clear, high-quality reference model answer to the question so the candidate can compare what they should have said.
 
                 Return ONLY valid JSON:
-
                 {
                   "score": 0.0,
                   "technicalAccuracy": 0.0,
@@ -145,11 +164,11 @@ public class AIService {
                   "clarity": 0.0,
                   "correctPoints": "string",
                   "missingPoints": "string",
-                  "feedback": "string"
+                  "feedback": "string",
+                  "idealAnswer": "string"
                 }
 
                 Scores must be numbers between 0 and 100.
-
                 Do not return markdown.
                 Do not return anything outside JSON.
                 """.formatted(question, answer);
@@ -162,6 +181,10 @@ public class AIService {
 
             JsonNode node = objectMapper.readTree(json);
 
+            String idealAnswer = node.has("idealAnswer") && !node.get("idealAnswer").isNull()
+                    ? node.get("idealAnswer").asText()
+                    : offlineFallbackEngine.generateModelAnswer(question);
+
             return new AnswerEvaluationResponse(
                     node.get("score").asDouble(),
                     node.get("technicalAccuracy").asDouble(),
@@ -169,12 +192,11 @@ public class AIService {
                     node.get("clarity").asDouble(),
                     node.get("correctPoints").asText(),
                     node.get("missingPoints").asText(),
-                    node.get("feedback").asText()
+                    node.get("feedback").asText(),
+                    idealAnswer
             );
 
         } catch (Exception e) {
-
-            // AI unavailable — score the answer with the offline heuristic
             log.warn(
                     "AI evaluation failed, using offline evaluation: {}",
                     e.getMessage()
@@ -195,91 +217,125 @@ public class AIService {
             AnswerEvaluationResponse evaluation,
             List<String> askedQuestions,
             Difficulty baseDifficulty) {
-
-        String instructions = """
-                You are conducting a LIVE ADAPTIVE technical interview.
-
-                Interview role:
-                %s
-
-                Previous question:
-                %s
-
-                Candidate answer:
-                %s
-
-                Previous answer evaluation:
-
-                Overall score: %.2f
-                Technical accuracy: %.2f
-                Completeness: %.2f
-                Clarity: %.2f
-
-                Correct points:
-                %s
-
-                Missing points:
-                %s
-
-                Feedback:
-                %s
-
-                Now decide the best NEXT question.
-
-                IMPORTANT:
-
-                - Do NOT use a fixed question list.
-                - Base the next question on the candidate's actual answer.
-                - If the candidate is weak, ask an easier clarification or follow-up.
-                - If the candidate is partially correct, test the missing concept.
-                - If the candidate is strong, increase difficulty.
-                - You may ask a deeper technical question.
-                - You may ask a practical scenario question.
-                - You may move to a related new topic if appropriate.
-                - The next question should not simply repeat the previous question.
-
-                Question types allowed:
-
-                FOLLOW_UP
-                DEEP_DIVE
-                CLARIFICATION
-                SCENARIO
-                NEW_TOPIC
-
-                Difficulty allowed:
-
-                EASY
-                MEDIUM
-                HARD
-
-                Return ONLY valid JSON:
-
-                {
-                  "question": "next question",
-                  "topic": "topic",
-                  "difficulty": "EASY",
-                  "questionType": "FOLLOW_UP"
-                }
-
-                Do not return markdown.
-                Do not return anything outside JSON.
-                """.formatted(
+        return generateNextQuestion(
                 role,
                 previousQuestion,
                 answer,
-                evaluation.getScore(),
-                evaluation.getTechnicalAccuracy(),
-                evaluation.getCompleteness(),
-                evaluation.getClarity(),
-                evaluation.getCorrectPoints(),
-                evaluation.getMissingPoints(),
-                evaluation.getFeedback()
+                evaluation,
+                askedQuestions,
+                baseDifficulty,
+                com.AI_Interview.AI_Interview.enums.InterviewType.LIVE_ADAPTIVE,
+                1,
+                5
         );
+    }
+
+    public NextQuestionResponse generateNextQuestion(
+            String role,
+            String previousQuestion,
+            String answer,
+            AnswerEvaluationResponse evaluation,
+            List<String> askedQuestions,
+            Difficulty baseDifficulty,
+            com.AI_Interview.AI_Interview.enums.InterviewType type,
+            int currentQuestionNumber,
+            int totalQuestionLimit) {
+
+        boolean isLive = type == com.AI_Interview.AI_Interview.enums.InterviewType.LIVE_ADAPTIVE;
+        boolean isFinalQuestion = currentQuestionNumber >= totalQuestionLimit - 1;
+
+        String instructions;
+        if (isLive) {
+            String timeNotice = isFinalQuestion
+                    ? "- TIME & WRAP-UP NOTICE: This is the FINAL question of the interview. Open with a natural, time-aware transition (e.g. 'We have time for one last question before wrapping up today...') and ask a comprehensive question."
+                    : "- Pacing: We have plenty of time remaining. Maintain an engaging, steady conversational pace.";
+
+            instructions = """
+                    You are conducting a realistic 1-on-1 LIVE PERSON-VS-PERSON technical interview.
+                    Target Role: %s
+
+                    Previous Question:
+                    %s
+
+                    Candidate's Answer:
+                    %s
+
+                    Previous Answer Evaluation:
+                    - Accuracy: %.1f%%
+                    - Score: %.1f
+                    - What candidate got right: %s
+                    - What was missing: %s
+
+                    INSTRUCTIONS FOR PERSON-VS-PERSON ADAPTIVE INTERACTION:
+                    1. React directly and naturally to what the candidate actually said in their answer (e.g. "I see how you approached caching with Redis, but what if...", or "Thanks for walking through your background; let's drill into the architecture of that project...").
+                    2. Dynamic follow-up according to their answer:
+                       - If their answer was incomplete or vague: ask a targeted follow-up or clarification on the missing piece.
+                       - If their answer was solid: test edge cases, scalability trade-offs, or increase difficulty.
+                       - If they introduced themselves: pick 1 key technology they mentioned and ask a practical question about it.
+                    3. Do not sound robotic. Sound like a friendly, sharp senior interviewer speaking directly with the candidate.
+                    4. %s
+
+                    Question types allowed: FOLLOW_UP, DEEP_DIVE, CLARIFICATION, SCENARIO, NEW_TOPIC
+                    Difficulty allowed: EASY, MEDIUM, HARD
+
+                    Return ONLY valid JSON:
+                    {
+                      "question": "next question text including conversational transition",
+                      "topic": "topic",
+                      "difficulty": "EASY|MEDIUM|HARD",
+                      "questionType": "FOLLOW_UP"
+                    }
+                    Do not return markdown. Do not return anything outside JSON.
+                    """.formatted(
+                    role,
+                    previousQuestion,
+                    answer,
+                    evaluation.getTechnicalAccuracy(),
+                    evaluation.getScore(),
+                    evaluation.getCorrectPoints(),
+                    evaluation.getMissingPoints(),
+                    timeNotice
+            );
+        } else {
+            instructions = """
+                    You are conducting a structured NORMAL technical interview.
+                    Target Role: %s
+
+                    Previous Question:
+                    %s
+
+                    Candidate's Answer:
+                    %s
+
+                    Evaluation Score: %.1f/100
+
+                    Ask the NEXT direct technical question testing another core capability for this role at base difficulty %s.
+                    Do not add conversational pleasantries; formulate a direct, objective technical question.
+
+                    Question types allowed: FOLLOW_UP, DEEP_DIVE, SCENARIO, NEW_TOPIC
+                    Difficulty allowed: EASY, MEDIUM, HARD
+
+                    Return ONLY valid JSON:
+                    {
+                      "question": "next question text",
+                      "topic": "topic",
+                      "difficulty": "EASY|MEDIUM|HARD",
+                      "questionType": "NEW_TOPIC"
+                    }
+                    Do not return markdown. Do not return anything outside JSON.
+                    """.formatted(
+                    role,
+                    previousQuestion,
+                    answer,
+                    evaluation.getScore(),
+                    baseDifficulty
+            );
+        }
 
         try {
             String json = callAI(
                     instructions,
-                    "Generate the next adaptive interview question."
+                    isLive ? "Generate live conversational adaptive follow-up question." : "Generate next technical question."
             );
 
             JsonNode node = objectMapper.readTree(json);
@@ -304,9 +360,6 @@ public class AIService {
             );
 
         } catch (Exception e) {
-
-            // AI unavailable — pick the next question from the offline
-            // bank, adapting difficulty from the previous answer's score
             log.warn(
                     "AI next-question failed, using offline fallback: {}",
                     e.getMessage()
@@ -318,6 +371,36 @@ public class AIService {
                     baseDifficulty,
                     evaluation.getScore()
             );
+        }
+    }
+
+    // =========================================================
+    // 4. GENERATE IDEAL / MODEL ANSWER (FOR REVIEW & COMPARISON)
+    // =========================================================
+
+    public String generateIdealAnswer(String question, String role) {
+        if (question == null || question.isBlank()) {
+            return offlineFallbackEngine.generateModelAnswer(question);
+        }
+
+        String prompt = """
+                You are a senior tech lead. Provide the comprehensive, accurate, and ideal model answer for this interview question:
+                Role: %s
+                Question: %s
+
+                Provide a 2 to 3 paragraph answer that:
+                1. Clearly states the core technical definition and mechanism.
+                2. Gives a practical real-world scenario or code approach.
+                3. Highlights key architectural trade-offs or performance best practices.
+
+                Return plain text only without markdown backticks or quotes.
+                """.formatted(role != null ? role : "Software Engineer", question);
+
+        try {
+            return callAI(prompt, "Generate ideal answer for question.");
+        } catch (Exception e) {
+            log.warn("AI ideal answer generation failed: {}", e.getMessage());
+            return offlineFallbackEngine.generateModelAnswer(question);
         }
     }
 

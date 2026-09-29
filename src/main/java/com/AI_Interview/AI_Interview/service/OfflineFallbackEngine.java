@@ -143,6 +143,22 @@ public class OfflineFallbackEngine {
     public NextQuestionResponse initialQuestion(
             String role,
             Difficulty difficulty) {
+        return initialQuestion(role, difficulty, com.AI_Interview.AI_Interview.enums.InterviewType.LIVE_ADAPTIVE);
+    }
+
+    public NextQuestionResponse initialQuestion(
+            String role,
+            Difficulty difficulty,
+            com.AI_Interview.AI_Interview.enums.InterviewType type) {
+
+        if (type == com.AI_Interview.AI_Interview.enums.InterviewType.LIVE_ADAPTIVE) {
+            return new NextQuestionResponse(
+                    "Hello and welcome! I'm Alex, your AI interviewer today for the " + (role != null ? role : "Engineering") + " role. To get started, please tell me a bit about yourself, your background, and the key projects and technologies you've been working with recently.",
+                    "Introduction & Background",
+                    difficulty != null ? difficulty : Difficulty.EASY,
+                    QuestionType.INITIAL
+            );
+        }
 
         BankQuestion question = pick(List.of(), difficulty);
 
@@ -267,6 +283,8 @@ public class OfflineFallbackEngine {
                 structured ? ", and was structured in complete sentences" : "",
                 detailNote);
 
+        String idealAnswer = generateModelAnswer(question);
+
         return new AnswerEvaluationResponse(
                 clamp(overall),
                 clamp(technical),
@@ -274,7 +292,31 @@ public class OfflineFallbackEngine {
                 clamp(clarity),
                 correctPoints,
                 missingPoints,
-                feedback);
+                feedback,
+                idealAnswer);
+    }
+
+    public String generateModelAnswer(String question) {
+        if (question == null || question.isBlank()) {
+            return "A strong answer clearly defines the core concept, provides practical implementation examples, and outlines operational trade-offs and performance characteristics.";
+        }
+        String q = question.toLowerCase();
+        if (q.contains("array") && q.contains("linked list")) {
+            return "An array is a contiguous block of memory with O(1) random access by index, but fixed size and O(n) insertions/deletions. A linked list consists of nodes with data and pointers to the next node, offering dynamic sizing and O(1) insertion/deletion at known positions, but O(n) sequential search and extra memory overhead for pointers.";
+        } else if (q.contains("class") && q.contains("object")) {
+            return "A class is a blueprint or template that defines properties and behaviors (methods), while an object is an instantiated runtime instance of that class occupying memory.";
+        } else if (q.contains("http") || q.contains("status code")) {
+            return "HTTP 200 OK means the request succeeded. HTTP 404 Not Found indicates the requested resource could not be found on the server. HTTP 500 Internal Server Error means an unexpected server-side exception or error prevented fulfilling the request.";
+        } else if (q.contains("process") && q.contains("thread")) {
+            return "A process is an independent execution environment with its own dedicated memory address space allocated by the OS. A thread is the smallest unit of execution within a process; threads in the same process share code, data, and resources (heap), making thread context switching faster but requiring careful concurrency synchronization.";
+        } else if (q.contains("index")) {
+            return "Database indexes (commonly B-Trees or Hash tables) are auxiliary data structures that dramatically accelerate query retrieval (SELECT) from O(n) table scans to O(log n). The trade-offs include additional disk storage consumption and write amplification, as INSERT, UPDATE, and DELETE operations must update both the table and its associated indexes.";
+        } else if (q.contains("inheritance") && q.contains("composition")) {
+            return "Inheritance is an 'is-a' relationship allowing subclasses to inherit fields and methods from a parent class, which creates tight coupling. Composition is a 'has-a' relationship where a class contains instances of other classes to achieve functionality, which promotes loose coupling, easier testing, and dynamic runtime flexibility.";
+        } else if (q.contains("introduce") || q.contains("background") || q.contains("tell me about yourself")) {
+            return "A strong self-introduction follows the Present-Past-Future structure: briefly summarize your current role and specialization, highlight 1-2 major impactful projects and core technologies you excel in, and express your passion and readiness for the target position.";
+        }
+        return "An ideal answer should: 1) Clearly define the core technical concepts and architecture. 2) Provide concrete production examples with code or system patterns. 3) Discuss trade-offs, edge cases, and performance considerations (e.g. latency, memory, scalability).";
     }
 
     // =========================================================

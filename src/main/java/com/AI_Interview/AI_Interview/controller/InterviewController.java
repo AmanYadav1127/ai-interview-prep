@@ -75,33 +75,13 @@ public class InterviewController {
         return ResponseEntity.ok("Interview completed");
     }
 
-    // Get final AI interview report
-    //
-    // If the report is missing but the interview is completed (e.g. the AI
-    // call failed when the last answer was submitted), it is regenerated
-    // here — so the frontend's "Retry" button actually works.
+    // Get final AI interview report with question-by-question comparison
     @GetMapping("/{interviewId}/result")
-    public ResponseEntity<InterviewResult> getInterviewResult(
+    public ResponseEntity<com.AI_Interview.AI_Interview.dto.InterviewResultResponse> getInterviewResult(
             @PathVariable Long interviewId) {
 
-        Interview interview =
-                interviewService.getInterviewById(interviewId);
-
-        Optional<InterviewResult> existing =
-                interviewResultRepository.findByInterview(interview);
-
-        if (existing.isPresent()) {
-            return ResponseEntity.ok(existing.get());
-        }
-
-        if (!"COMPLETED".equals(interview.getStatus())) {
-            throw new ResourceNotFoundException(
-                    "Interview result is not available yet"
-            );
-        }
-
         return ResponseEntity.ok(
-                answerService.generateAndSaveFinalReport(interview)
+                answerService.getInterviewResultResponse(interviewId)
         );
     }
 }

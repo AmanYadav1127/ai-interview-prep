@@ -26,4 +26,6 @@ public class CreateInterviewRequest {
 
     @Min(1)
     private int questionLimit;
+
+    private Integer durationMinutes;
 }

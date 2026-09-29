@@ -45,6 +45,11 @@ public class InterviewService {
         interview.setType(request.getType());
         interview.setDifficulty(request.getDifficulty());
         interview.setQuestionLimit(request.getQuestionLimit());
+        interview.setDurationMinutes(
+                request.getDurationMinutes() != null && request.getDurationMinutes() > 0
+                        ? request.getDurationMinutes()
+                        : 10
+        );
 
         interview.setStatus("NOT_STARTED");
         interview.setStartedAt(null);
@@ -87,12 +92,18 @@ public class InterviewService {
                 .orElseThrow(() ->
                         new ResourceNotFoundException("Interview not found"));
 
+        // If questions already exist for this interview, return the latest
+        List<Question> existingQuestions =
+                questionRepository.findByInterviewOrderByQuestionOrderAsc(interview);
+
+        if (!existingQuestions.isEmpty()) {
+            return existingQuestions.get(existingQuestions.size() - 1);
+        }
+
         // Start interview
         if (interview.getStartedAt() == null) {
-
             interview.setStartedAt(LocalDateTime.now());
             interview.setStatus("IN_PROGRESS");
-
             interviewRepository.save(interview);
         }
 
@@ -100,7 +111,8 @@ public class InterviewService {
         NextQuestionResponse response =
                 aiService.generateInitialQuestion(
                         interview.getRole(),
-                        interview.getDifficulty()
+                        interview.getDifficulty(),
+                        interview.getType()
                 );
 
         // Create question
@@ -111,7 +123,6 @@ public class InterviewService {
         question.setTopic(response.getTopic());
         question.setDifficulty(response.getDifficulty());
         question.setQuestionType(response.getQuestionType());
-
         question.setQuestionOrder(0);
 
         return questionRepository.save(question);

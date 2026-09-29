@@ -86,6 +86,9 @@ public class AnswerService {
         evaluation.setFeedback(
                 evaluationResponse.getFeedback()
         );
+        evaluation.setIdealAnswer(
+                evaluationResponse.getIdealAnswer()
+        );
 
         evaluationRepository.save(evaluation);
 
@@ -100,11 +103,6 @@ public class AnswerService {
             interviewRepository.save(interview);
 
             // 6. Generate the final AI report.
-            //
-            // If the AI call fails here (e.g. API quota exhausted), the
-            // interview is still complete — the answer and its evaluation
-            // are already stored. GET /api/interviews/{id}/result will
-            // retry the report generation on demand.
             try {
                 generateAndSaveFinalReport(interview);
             } catch (Exception e) {
@@ -120,7 +118,6 @@ public class AnswerService {
         }
 
         // 8. Generate next adaptive question
-        //    (AI when available, offline bank otherwise)
         List<String> askedQuestions = answerRepository
                 .findByQuestion_Interview(interview)
                 .stream()
@@ -135,7 +132,10 @@ public class AnswerService {
                         request.getAnswerText(),
                         evaluationResponse,
                         askedQuestions,
-                        question.getDifficulty()
+                        question.getDifficulty(),
+                        interview.getType(),
+                        currentQuestionNumber,
+                        interview.getQuestionLimit()
                 );
 
         // 9. Create next question
@@ -433,5 +433,102 @@ public class AnswerService {
         result.setStrengths(String.join("\n", strengths));
         result.setWeaknesses(String.join("\n", weaknesses));
         result.setRecommendations(String.join("\n", recommendations));
+    }
+
+    // =========================================================
+    // GET COMPLETE INTERVIEW RESULT RESPONSE WITH COMPARISON
+    // =========================================================
+
+    public com.AI_Interview.AI_Interview.dto.InterviewResultResponse getInterviewResultResponse(Long interviewId) {
+
+        Interview interview = interviewRepository.findById(interviewId)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Interview not found"));
+
+        InterviewResult result = interviewResultRepository.findByInterview(interview)
+                .orElseGet(() -> {
+                    if (!"COMPLETED".equals(interview.getStatus())) {
+                        interview.setStatus("COMPLETED");
+                        interview.setCompletedAt(LocalDateTime.now());
+                        interviewRepository.save(interview);
+                    }
+                    return generateAndSaveFinalReport(interview);
+                });
+
+        List<Answer> answers = answerRepository
+                .findByQuestion_InterviewOrderByQuestion_IdAsc(interview);
+
+        List<com.AI_Interview.AI_Interview.dto.QuestionComparisonDto> questionDtos = new ArrayList<>();
+
+        for (int i = 0; i < answers.size(); i++) {
+            Answer ans = answers.get(i);
+            Question q = ans.getQuestion();
+            Evaluation eval = evaluationRepository.findByAnswer(ans).orElse(null);
+
+            String ideal = eval != null && eval.getIdealAnswer() != null && !eval.getIdealAnswer().isBlank()
+                    ? eval.getIdealAnswer()
+                    : aiService.generateIdealAnswer(q.getQuestionText(), interview.getRole());
+
+            if (eval != null && (eval.getIdealAnswer() == null || eval.getIdealAnswer().isBlank())) {
+                eval.setIdealAnswer(ideal);
+                evaluationRepository.save(eval);
+            }
+
+            double accuracy = eval != null ? eval.getTechnicalAccuracy() : 0.0;
+            double score = eval != null ? eval.getScore() : 0.0;
+            double completeness = eval != null ? eval.getCompleteness() : 0.0;
+            double clarity = eval != null ? eval.getClarity() : 0.0;
+            String feedback = eval != null && eval.getFeedback() != null ? eval.getFeedback() : "Answer recorded.";
+            String correctPoints = eval != null && eval.getCorrectPoints() != null ? eval.getCorrectPoints() : "";
+            String missingPoints = eval != null && eval.getMissingPoints() != null ? eval.getMissingPoints() : "";
+
+            questionDtos.add(
+                    com.AI_Interview.AI_Interview.dto.QuestionComparisonDto.builder()
+                            .questionId(q.getId())
+                            .questionOrder(q.getQuestionOrder() > 0 ? q.getQuestionOrder() : (i + 1))
+                            .questionText(q.getQuestionText())
+                            .topic(q.getTopic() != null ? q.getTopic() : "General")
+                            .difficulty(q.getDifficulty() != null ? q.getDifficulty().name() : "MEDIUM")
+                            .questionType(q.getQuestionType() != null ? q.getQuestionType().name() : "TECHNICAL")
+                            .candidateAnswer(ans.getAnswerText())
+                            .idealAnswer(ideal)
+                            .accuracyPercentage(accuracy)
+                            .score(score)
+                            .technicalAccuracy(accuracy)
+                            .completeness(completeness)
+                            .clarity(clarity)
+                            .feedback(feedback)
+                            .correctPoints(correctPoints)
+                            .missingPoints(missingPoints)
+                            .build()
+            );
+        }
+
+        com.AI_Interview.AI_Interview.dto.InterviewSummaryDto interviewSummary =
+                com.AI_Interview.AI_Interview.dto.InterviewSummaryDto.builder()
+                        .id(interview.getId())
+                        .title(interview.getTitle())
+                        .role(interview.getRole())
+                        .mode(interview.getMode() != null ? interview.getMode().name() : "TEXT")
+                        .type(interview.getType() != null ? interview.getType().name() : "LIVE_ADAPTIVE")
+                        .difficulty(interview.getDifficulty() != null ? interview.getDifficulty().name() : "MEDIUM")
+                        .questionLimit(interview.getQuestionLimit())
+                        .durationMinutes(interview.getDurationMinutes() != null ? interview.getDurationMinutes() : 10)
+                        .status(interview.getStatus())
+                        .startedAt(interview.getStartedAt() != null ? interview.getStartedAt().toString() : "")
+                        .completedAt(interview.getCompletedAt() != null ? interview.getCompletedAt().toString() : "")
+                        .build();
+
+        return com.AI_Interview.AI_Interview.dto.InterviewResultResponse.builder()
+                .id(result.getId())
+                .overallScore(result.getOverallScore())
+                .technicalScore(result.getTechnicalScore())
+                .communicationScore(result.getCommunicationScore())
+                .strengths(result.getStrengths())
+                .weaknesses(result.getWeaknesses())
+                .recommendations(result.getRecommendations())
+                .interview(interviewSummary)
+                .questions(questionDtos)
+                .build();
     }
 }

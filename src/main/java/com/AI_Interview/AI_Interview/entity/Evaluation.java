@@ -38,4 +38,7 @@ public class Evaluation {
 
     @Column(columnDefinition = "TEXT")
     private String missingPoints;
+
+    @Column(columnDefinition = "TEXT")
+    private String idealAnswer;
 }

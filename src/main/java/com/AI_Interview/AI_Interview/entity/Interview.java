@@ -41,6 +41,9 @@ public class Interview {
     private Difficulty difficulty;
 
     private int questionLimit;
+ 
+    @Column(name = "duration_minutes")
+    private Integer durationMinutes = 10;
 
     private String status;
 
